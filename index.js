@@ -26,7 +26,7 @@ module.exports = function(homebridge) {
 
     // For platform plugin to be considered as dynamic platform plugin,
     // registerPlatform(pluginName, platformName, constructor, dynamic), dynamic must be true
-    homebridge.registerPlatform("homebridge-eWeLink", "eWeLink", eWeLink, true);
+    homebridge.registerPlatform("homebridge-ewelink-garage", "eWeLinkGarage", eWeLink, true);
 
 };
 
@@ -47,7 +47,7 @@ function eWeLink(log, config, api) {
         config['webSocketApi'] = 'us-pconnect3.coolkit.cc';
     }
 
-    log("Intialising eWeLink");
+    log("Intialising eWeLinkGarage");
 
     let platform = this;
 
@@ -69,9 +69,9 @@ function eWeLink(log, config, api) {
         this.api.on('didFinishLaunching', function() {
 
             platform.log("A total of [%s] accessories were loaded from the local cache", platform.accessories.size);
-            
+
             this.login(function () {
-                
+
                 // Get a list of all devices from the API, and compare it to the list of cached devices.
                 // New devices will be added, and devices that exist in the cache but not in the web list
                 // will be removed from Homebridge.
@@ -107,7 +107,7 @@ function eWeLink(log, config, api) {
                     if (size === 0) {
                         platform.log("As there were no devices were found, all devices have been removed from the platorm's cache. Please regiester your devices using the eWeLink app and restart HomeBridge");
                         platform.accessories.clear();
-                        platform.api.unregisterPlatformAccessories("homebridge-eWeLink", "eWeLink", platform.accessories);
+                        platform.api.unregisterPlatformAccessories("homebridge-ewelink-garage", "eWeLink", platform.accessories);
                         return;
                     }
 
@@ -178,17 +178,26 @@ function eWeLink(log, config, api) {
                                 platform.updateCurrentTemperatureCharacteristic(deviceId, deviceInformationFromWebApi.params);
                             }
 
+                            if(deviceInformationFromWebApi.extra.extra.model === "PSF-B01-GL") {
+                                platform.log("Garage Door device has been set: " + deviceInformationFromWebApi.extra.extra.model);
+                                accessory.getService(Service.AccessoryInformation).setCharacteristic(Characteristic.Name, deviceInformationFromWebApi.name);
+                                platform.updateGarageDoorCharacteristic(deviceId, deviceInformationFromWebApi.params);
+                            }
+
                         } else {
                             let deviceToAdd = platform.devicesFromApi.get(deviceId);
                             let switchesAmount = platform.getDeviceChannelCount(deviceToAdd);
 
                             let services = {};
-                            services.switch = true;
+//                            services.switch = true;
 
                             if(deviceToAdd.extra.extra.model === "PSA-BHA-GL") {
                                 services.thermostat = true;
                                 services.temperature = true;
                                 services.humidity = true;
+                              } else if (deviceToAdd.extra.extra.model === "PSF-B01-GL") {
+                                platform.log("Adding GarageDoorOpener service");
+                                services.GarageDoorOpener = true;
                             } else {
                             	services.switch = true;
                             }
@@ -198,7 +207,7 @@ function eWeLink(log, config, api) {
                                     platform.addAccessory(deviceToAdd, deviceId + 'CH' + (i+1), services);
                                 }
                             } else {
-                                platform.log('Device [%s], ID : [%s] will be added', deviceToAdd.name, deviceToAdd.deviceid);
+                                platform.log('Single Device [%s], ID : [%s] will be added', deviceToAdd.name, deviceToAdd.deviceid);
                                 platform.addAccessory(deviceToAdd, null, services);
                             }
                         }
@@ -256,7 +265,12 @@ function eWeLink(log, config, api) {
                                 if (json.hasOwnProperty("params") && (json.params.hasOwnProperty("currentTemperature") || json.params.hasOwnProperty("currentHumidity"))) {
                                     platform.updateCurrentTemperatureCharacteristic(json.deviceid, json.params);
                                 }
-    
+
+                                if (json.hasOwnProperty("params") && (json.params.hasOwnProperty("CurrentDoorState") )) {
+                                  platform.log("Updating Garage Door Characteristic");
+                                    platform.updateGarageDoorCharacteristic(json.deviceid, json.params);
+                                }
+
 
                             }
 
@@ -339,6 +353,18 @@ eWeLink.prototype.configureAccessory = function(accessory) {
             });
 
     }
+    if (accessory.getService(Service.GarageDoorOpener)) {
+
+        accessory.getService(Service.GarageDoorOpener)
+            .getCharacteristic(Characteristic.CurrentDoorState)
+            .on('set', function(value, callback) {
+                platform.setDoorState(accessory, value, callback);
+            })
+            .on('get', function(callback) {
+                platform.getDoorState(accessory, callback);
+            });
+
+    }
     if(accessory.getService(Service.Thermostat)) {
         var service = accessory.getService(Service.Thermostat);
 
@@ -356,7 +382,7 @@ eWeLink.prototype.configureAccessory = function(accessory) {
         .on('get', function(callback) {
             platform.getCurrentHumidity(accessory, callback);
         });
-    } 
+    }
     if(accessory.getService(Service.TemperatureSensor)) {
         accessory.getService(Service.TemperatureSensor)
         .getCharacteristic(Characteristic.CurrentTemperature)
@@ -366,7 +392,7 @@ eWeLink.prototype.configureAccessory = function(accessory) {
         .on('get', function(callback) {
             platform.getCurrentTemperature(accessory, callback);
         });
-    } 
+    }
     if(accessory.getService(Service.HumiditySensor)) {
         accessory.getService(Service.HumiditySensor)
         .getCharacteristic(Characteristic.CurrentRelativeHumidity)
@@ -377,7 +403,7 @@ eWeLink.prototype.configureAccessory = function(accessory) {
             platform.getCurrentHumidity(accessory, callback);
         });
     }
-    
+
 
     this.accessories.set(accessory.context.deviceId, accessory);
 
@@ -405,7 +431,7 @@ eWeLink.prototype.addAccessory = function(device, deviceId = null, services = { 
         channel = id[1];
     }
 
-    try {   
+    try {
         const status = channel && device.params.switches && device.params.switches[channel-1] ? device.params.switches[channel-1].switch : device.params.switch || "off";
         this.log("Found Accessory with Name : [%s], Manufacturer : [%s], Status : [%s], Is Online : [%s], API Key: [%s] ", device.name + (channel ? ' CH ' + channel : ''), device.productModel, status, device.online, device.apikey);
     } catch (e) {
@@ -426,7 +452,7 @@ eWeLink.prototype.addAccessory = function(device, deviceId = null, services = { 
     accessory.context.channel = channel;
 
     accessory.reachable = device.online === 'true';
-    
+
     if(services.switch) {
         accessory.addService(Service.Switch, device.name + (channel ? ' CH ' + channel : ''))
         .getCharacteristic(Characteristic.On)
@@ -435,6 +461,17 @@ eWeLink.prototype.addAccessory = function(device, deviceId = null, services = { 
         })
         .on('get', function(callback) {
             platform.getPowerState(accessory, callback);
+        });
+    }
+    if(services.GarageDoorOpener) {
+      platform.log("Adding GarageDoorOpener service");
+        accessory.addService(Service.GarageDoorOpener, device.name + (channel ? ' CH ' + channel : ''))
+        .getCharacteristic(Characteristic.CurrentDoorState)
+        .on('set', function(value, callback) {
+            platform.setDoorState(accessory, value, callback);
+        })
+        .on('get', function(callback) {
+            platform.getDoorState(accessory, callback);
         });
     }
     if(services.thermostat) {
@@ -495,7 +532,7 @@ eWeLink.prototype.addAccessory = function(device, deviceId = null, services = { 
 
     this.accessories.set(device.deviceid, accessory);
 
-    this.api.registerPlatformAccessories("homebridge-eWeLink",
+    this.api.registerPlatformAccessories("homebridge-ewelink-garage",
         "eWeLink", [accessory]);
 
 };
@@ -536,6 +573,37 @@ eWeLink.prototype.updatePowerStateCharacteristic = function(deviceId, state, dev
     accessory.getService(Service.Switch)
         .setCharacteristic(Characteristic.On, isOn);
 
+};
+
+eWeLink.prototype.updateGarageDoorCharacteristic = function(deviceId, state, device = null, channel = null) {
+
+    // Used when we receive an update from an external source
+
+    let platform = this;
+
+    let isOn = false;
+
+    let accessory = platform.accessories.get(deviceId);
+
+    if(typeof accessory === 'undefined' && device) {
+        platform.log("Adding accessory for deviceId [%s].", deviceId);
+        platform.addAccessory(device, deviceId);
+        accessory = platform.accessories.get(deviceId);
+    }
+
+    if (!accessory) {
+        platform.log("Error updating non-exist accessory with deviceId [%s].", deviceId);
+        return;
+    }
+
+    if (state === 'on') {
+        isOn = true;
+    }
+
+    platform.log("Updating recorded Characteristic.On for [%s] to [%s]. No request will be sent to the device.", accessory.displayName, isOn);
+
+    accessory.getService(Service.GarageDoorOpener)
+      .setCharacteristic(Characteristic.CurrentDoorState, isOn);
 };
 
 eWeLink.prototype.updateCurrentTemperatureCharacteristic = function(deviceId, state, device = null, channel = null) {
@@ -693,6 +761,121 @@ eWeLink.prototype.getPowerState = function(accessory, callback) {
 
 };
 
+eWeLink.prototype.getDoorState = function(accessory, callback) {
+    let platform = this;
+
+    if (!this.webClient) {
+        callback('this.webClient not yet ready while obtaining power status for your device');
+        accessory.reachable = false;
+        return;
+    }
+
+    platform.log("Requesting door state for [%s]", accessory.displayName);
+
+    this.webClient.get('/api/user/device', function(err, res, body) {
+
+        if (err){
+            platform.log("An error was encountered while requesting a list of devices while interrogating power status. Verify your configuration options. Error was [%s]", err);
+            return;
+        } else if (!body || body.hasOwnProperty('error')) {
+            platform.log("An error was encountered while requesting a list of devices while interrogating power status. Verify your configuration options. Response was [%s]", JSON.stringify(body));
+            if (body.hasOwnProperty('error') && [401, 402].indexOf(parseInt(body.error)) !== -1) {
+                platform.relogin();
+            }
+            callback('An error was encountered while requesting a list of devices to interrogate power status for your device');
+            return;
+        }
+
+        let size = Object.keys(body).length;
+
+        if (body.length < 1) {
+            callback('An error was encountered while requesting a list of devices to interrogate power status for your device');
+            accessory.reachable = false;
+            return;
+        }
+
+        let deviceId = accessory.context.deviceId;
+
+        if(accessory.context.switches > 1) {
+            deviceId = deviceId.replace("CH" + accessory.context.channel, "");
+        }
+
+        let filteredResponse = body.filter(device => (device.deviceid === deviceId));
+
+        if (filteredResponse.length === 1) {
+
+            let device = filteredResponse[0];
+
+            if (device.deviceid === deviceId) {
+
+                if (device.online !== true) {
+                    accessory.reachable = false;
+                    platform.log("Device [%s] was reported to be offline by the API", accessory.displayName);
+                    callback('API reported that [%s] is not online', device.name);
+                    return;
+                }
+
+                if(accessory.context.switches > 1) {
+
+                    if (device.params.switches[accessory.context.channel-1].switch === 'on') {
+                        accessory.reachable = true;
+                        platform.log('API reported that [%s] CH %s is Open', device.name, accessory.context.channel);
+                        callback(null, 0);
+                        return;
+                    } else if (device.params.switches[accessory.context.channel-1].switch === 'off') {
+                        accessory.reachable = true;
+                        platform.log('API reported that [%s] CH %s is Closed', device.name, accessory.context.channel);
+                        callback(null, 1);
+                        return;
+                    } else {
+                        accessory.reachable = false;
+                        platform.log('API reported an unknown status for device [%s]', accessory.displayName);
+                        callback('API returned an unknown status for device ' + accessory.displayName);
+                        return;
+                    }
+
+                } else {
+
+                    if (device.params.switch === 'on') {
+                        accessory.reachable = true;
+                        platform.log('API reported that [%s] is Open', device.name);
+                        callback(null, 0);
+                        return;
+                    } else if (device.params.switch === 'off') {
+                        accessory.reachable = true;
+                        platform.log('API reported that [%s] is Closed', device.name);
+                        callback(null, 1);
+                        return;
+                    } else {
+                        accessory.reachable = false;
+                        platform.log('API reported an unknown status for device [%s]', accessory.displayName);
+                        callback('API returned an unknown status for device ' + accessory.displayName);
+                        return;
+                    }
+
+                }
+
+            }
+
+        } else if (filteredResponse.length > 1) {
+            // More than one device matches our Device ID. This should not happen.
+            platform.log("ERROR: The response contained more than one device with Device ID [%s]. Filtered response follows.", device.deviceid);
+            platform.log(filteredResponse);
+            callback("The response contained more than one device with Device ID " + device.deviceid);
+
+        } else if (filteredResponse.length < 1) {
+
+            // The device is no longer registered
+
+            platform.log("Device [%s] did not exist in the response. It will be removed", accessory.displayName);
+            platform.removeAccessory(accessory);
+
+        }
+
+    });
+
+};
+
 eWeLink.prototype.getCurrentTemperature = function(accessory, callback) {
     let platform = this;
 
@@ -739,7 +922,7 @@ eWeLink.prototype.getCurrentTemperature = function(accessory, callback) {
 
                 if(accessory.getService(Service.Thermostat)) {
                     accessory.getService(Service.Thermostat).setCharacteristic(Characteristic.CurrentTemperature, currentTemperature);
-                } 
+                }
                 if(accessory.getService(Service.TemperatureSensor)) {
                     accessory.getService(Service.TemperatureSensor).setCharacteristic(Characteristic.CurrentTemperature, currentTemperature);
                 }
@@ -813,7 +996,7 @@ eWeLink.prototype.getCurrentHumidity = function(accessory, callback) {
 
                 if(accessory.getService(Service.Thermostat)) {
                     accessory.getService(Service.Thermostat).setCharacteristic(Characteristic.CurrentRelativeHumidity, currentHumidity);
-                } 
+                }
                 if(accessory.getService(Service.HumiditySensor)) {
                     accessory.getService(Service.Thermostat).setCharacteristic(Characteristic.CurrentRelativeHumidity, currentHumidity);
                 }
@@ -873,7 +1056,56 @@ eWeLink.prototype.setHumidityState = function(accessory, value, callback) {
     callback();
 };
 
+eWeLink.prototype.setDoorState = function(accessory, isOn, callback) {
+    let platform = this;
+    let options = {};
+    let deviceId = accessory.context.deviceId;
+    options.protocolVersion = 13;
 
+    let targetState = 'off';
+
+    if (isOn) {
+        targetState = 'on';
+    }
+
+    platform.log("Setting power state to [%s] for device [%s]", targetState, accessory.displayName);
+
+    let payload = {};
+    payload.action = 'update';
+    payload.userAgent = 'app';
+    payload.params = {};
+    if(accessory.context.switches > 1) {
+        deviceId = deviceId.replace("CH"+accessory.context.channel,"");
+        let deviceInformationFromWebApi = platform.devicesFromApi.get(deviceId);
+        payload.params.switches = deviceInformationFromWebApi.params.switches;
+        payload.params.switches[accessory.context.channel - 1].switch = targetState;
+    }
+    else {
+        payload.params.switch = targetState;
+    }
+    payload.apikey = '' + accessory.context.apiKey;
+    payload.deviceid = '' + deviceId;
+
+    payload.sequence = platform.getSequence();
+
+    let string = JSON.stringify(payload);
+    // platform.log( string );
+
+    if (platform.isSocketOpen) {
+
+        setTimeout(function() {
+            platform.wsc.send(string);
+
+            // TODO Here we need to wait for the response to the socket
+
+            callback();
+        }, 1);
+
+    } else {
+        callback('Socket was closed. It will reconnect automatically; please retry your command');
+    }
+
+};
 
 
 eWeLink.prototype.setPowerState = function(accessory, isOn, callback) {
@@ -935,7 +1167,7 @@ eWeLink.prototype.removeAccessory = function(accessory) {
 
     this.accessories.delete(accessory.context.deviceId);
 
-    this.api.unregisterPlatformAccessories('homebridge-eWeLink',
+    this.api.unregisterPlatformAccessories('homebridge-ewelink-garage',
         'eWeLink', [accessory]);
 };
 
@@ -945,7 +1177,7 @@ eWeLink.prototype.login = function(callback) {
         callback();
         return;
     }
-    
+
     var data = {};
     if (this.config.phoneNumber) {
         data.phoneNumber = this.config.phoneNumber;
@@ -962,17 +1194,17 @@ eWeLink.prototype.login = function(callback) {
     data.model = 'iPhone10,6';
     data.romVersion = '11.1.2';
     data.appVersion = '3.5.3';
-    
+
     let json = JSON.stringify(data);
     this.log('Sending login request with user credentials: %s', json);
-    
+
     //let appSecret = "248,208,180,108,132,92,172,184,256,152,256,144,48,172,220,56,100,124,144,160,148,88,28,100,120,152,244,244,120,236,164,204";
     //let f = "ab!@#$ijklmcdefghBCWXYZ01234DEFGHnopqrstuvwxyzAIJKLMNOPQRSTUV56789%^&*()";
     //let decrypt = function(r){var n="";return r.split(',').forEach(function(r){var t=parseInt(r)>>2,e=f.charAt(t);n+=e}),n.trim()};
     let decryptedAppSecret = '6Nz4n0xA8s8qdxQf2GqurZj2Fs55FUvM'; //decrypt(appSecret);
     let sign = require('crypto').createHmac('sha256', decryptedAppSecret).update(json).digest('base64');
     this.log('Login signature: %s', sign);
-    
+
     let webClient = request.createClient('https://' + this.config.apiHost);
     webClient.headers['Authorization'] = 'Sign ' + sign;
     webClient.headers['Content-Type'] = 'application/json;charset=UTF-8';
@@ -982,7 +1214,7 @@ eWeLink.prototype.login = function(callback) {
             callback();
             return;
         }
-        
+
         // If we receive 301 error, switch to new region and try again
         if (body.hasOwnProperty('error') && body.error == 301 && body.hasOwnProperty('region')) {
             let idx = this.config.apiHost.indexOf('-');
@@ -999,20 +1231,20 @@ eWeLink.prototype.login = function(callback) {
                 return;
             }
         }
-        
+
         if (!body.at) {
             let response = JSON.stringify(body);
             this.log("Server did not response with an authentication token. Response was [%s]", response);
             callback();
             return;
         }
-        
+
         this.log('Authentication token received [%s]', body.at);
         this.authenticationToken = body.at;
         this.config.authenticationToken = body.at;
         this.webClient = request.createClient('https://' + this.config['apiHost']);
         this.webClient.headers['Authorization'] = 'Bearer ' + body.at;
-        
+
         this.getWebSocketHost(function () {
             callback(body.at);
         }.bind(this));
@@ -1031,7 +1263,7 @@ eWeLink.prototype.getWebSocketHost = function (callback) {
     data.model = 'iPhone10,6';
     data.romVersion = '11.1.2';
     data.appVersion = '3.5.3';
-    
+
     let webClient = request.createClient('https://' + this.config.apiHost.replace('-api', '-disp'));
     webClient.headers['Authorization'] = 'Bearer ' + this.authenticationToken;
     webClient.headers['Content-Type'] = 'application/json;charset=UTF-8';
@@ -1041,14 +1273,14 @@ eWeLink.prototype.getWebSocketHost = function (callback) {
             callback();
             return;
         }
-        
+
         if (!body.domain) {
             let response = JSON.stringify(body);
             this.log("Server did not response with a websocket host. Response was [%s]", response);
             callback();
             return;
         }
-        
+
         this.log('WebSocket host received [%s]', body.domain);
         this.config['webSocketApi'] = body.domain;
         if (this.wsc) {
