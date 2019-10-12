@@ -11,7 +11,9 @@ let sequence = 0;
 let webClient = '';
 let apiKey = 'UNCONFIGURED';
 let authenticationToken = 'UNCONFIGURED';
-let Accessory, Service, Characteristic, UUIDGen;
+let Accessory, Service, Characteristic, UUIDGen, DoorState;
+
+var doorState = 1; // Closed
 
 module.exports = function(homebridge) {
     console.log("homebridge API version: " + homebridge.version);
@@ -23,12 +25,14 @@ module.exports = function(homebridge) {
     Service = homebridge.hap.Service;
     Characteristic = homebridge.hap.Characteristic;
     UUIDGen = homebridge.hap.uuid;
+    DoorState = homebridge.hap.Characteristic.CurrentDoorState;
 
     // For platform plugin to be considered as dynamic platform plugin,
     // registerPlatform(pluginName, platformName, constructor, dynamic), dynamic must be true
     homebridge.registerPlatform("homebridge-ewelink-garage", "eWeLinkGarage", eWeLink, true);
 
 };
+
 
 // Platform constructor
 function eWeLink(log, config, api) {
@@ -105,7 +109,7 @@ function eWeLink(log, config, api) {
                     platform.log("eWeLink HTTPS API reports that there are a total of [%s] devices registered", size);
 
                     if (size === 0) {
-                        platform.log("As there were no devices were found, all devices have been removed from the platorm's cache. Please regiester your devices using the eWeLink app and restart HomeBridge");
+                        platform.log("As there were no devices were found, all devices have been removed from the platform's cache. Please regiester your devices using the eWeLink app and restart HomeBridge");
                         platform.accessories.clear();
                         platform.api.unregisterPlatformAccessories("homebridge-ewelink-garage", "eWeLink", platform.accessories);
                         return;
@@ -170,18 +174,16 @@ function eWeLink(log, config, api) {
                             } else  {
                                 platform.log("Single channel device has been set: " + deviceInformationFromWebApi.extra.extra.model + ' uiid: ' + deviceInformationFromWebApi.uiid);
                                 accessory.getService(Service.AccessoryInformation).setCharacteristic(Characteristic.Name, deviceInformationFromWebApi.name);
-                                platform.updatePowerStateCharacteristic(deviceId, deviceInformationFromWebApi.params.switch);
-                            }
-
+                                if(deviceInformationFromWebApi.extra.extra.model === "PSF-B01-GL") {
+                                    platform.log("Garage Door device has been set: " + deviceInformationFromWebApi.extra.extra.model);
+                                    platform.updateGarageDoorCharacteristic(deviceId, deviceInformationFromWebApi.params);
+                                } else {
+                                  platform.updatePowerStateCharacteristic(deviceId, deviceInformationFromWebApi.params.switch);
+                                }
+                              }
                             if(deviceInformationFromWebApi.extra.extra.model === "PSA-BHA-GL") {
                                 platform.log("Thermostat device has been set: " + deviceInformationFromWebApi.extra.extra.model);
                                 platform.updateCurrentTemperatureCharacteristic(deviceId, deviceInformationFromWebApi.params);
-                            }
-
-                            if(deviceInformationFromWebApi.extra.extra.model === "PSF-B01-GL") {
-                                platform.log("Garage Door device has been set: " + deviceInformationFromWebApi.extra.extra.model);
-                                accessory.getService(Service.AccessoryInformation).setCharacteristic(Characteristic.Name, deviceInformationFromWebApi.name);
-                                platform.updateGarageDoorCharacteristic(deviceId, deviceInformationFromWebApi.params);
                             }
 
                         } else {
@@ -196,7 +198,7 @@ function eWeLink(log, config, api) {
                                 services.temperature = true;
                                 services.humidity = true;
                               } else if (deviceToAdd.extra.extra.model === "PSF-B01-GL") {
-                                platform.log("Adding GarageDoorOpener service");
+                                platform.log("Adding services.GarageDoorOpener", deviceToAdd.extra.extra.model);
                                 services.GarageDoorOpener = true;
                             } else {
                             	services.switch = true;
@@ -215,6 +217,7 @@ function eWeLink(log, config, api) {
 
                     // Go through the web response to make sure that all the devices that are in the response do exist in the accessories map
                     if (platform.devicesFromApi.size > 0) {
+                      platform.log("Checking devices");
                         platform.devicesFromApi.forEach(checkIfDeviceIsAlreadyConfigured);
                     }
 
@@ -253,8 +256,11 @@ function eWeLink(log, config, api) {
                                 //platform.log("Update message received for device [%s]", json.deviceid);
 
                                 if (json.hasOwnProperty("params") && json.params.hasOwnProperty("switch")) {
-                                    platform.updatePowerStateCharacteristic(json.deviceid, json.params.switch);
+                                  platform.log("updatePowerStateCharacteristic in json.action === 'update'")
+                                  platform.updateGarageDoorCharacteristic(json.deviceid, json.params);
+                                  //platform.updatePowerStateCharacteristic(json.deviceid, json.params.switch);
                                 } else if (json.hasOwnProperty("params") && json.params.hasOwnProperty("switches") && Array.isArray(json.params.switches)) {
+                                  platform.log("updatePowerStateCharacteristic in json.params.hasOwnProperty('switches')")
                                     json.params.switches.forEach(function (entry) {
                                         if (entry.hasOwnProperty('outlet') && entry.hasOwnProperty('switch')) {
                                             platform.updatePowerStateCharacteristic(json.deviceid + 'CH' + (entry.outlet+1), entry.switch, platform.devicesFromApi.get(json.deviceid));
@@ -266,7 +272,7 @@ function eWeLink(log, config, api) {
                                     platform.updateCurrentTemperatureCharacteristic(json.deviceid, json.params);
                                 }
 
-                                if (json.hasOwnProperty("params") && (json.params.hasOwnProperty("CurrentDoorState") )) {
+                                if (json.hasOwnProperty("params") && (json.params.hasOwnProperty("TargetDoorState") )) {
                                   platform.log("Updating Garage Door Characteristic");
                                     platform.updateGarageDoorCharacteristic(json.deviceid, json.params);
                                 }
@@ -354,9 +360,9 @@ eWeLink.prototype.configureAccessory = function(accessory) {
 
     }
     if (accessory.getService(Service.GarageDoorOpener)) {
-
+      platform.log("Door state triggered")
         accessory.getService(Service.GarageDoorOpener)
-            .getCharacteristic(Characteristic.CurrentDoorState)
+            .getCharacteristic(Characteristic.TargetDoorState)
             .on('set', function(value, callback) {
                 platform.setDoorState(accessory, value, callback);
             })
@@ -465,8 +471,9 @@ eWeLink.prototype.addAccessory = function(device, deviceId = null, services = { 
     }
     if(services.GarageDoorOpener) {
       platform.log("Adding GarageDoorOpener service");
+      platform.log("Door state triggered")
         accessory.addService(Service.GarageDoorOpener, device.name + (channel ? ' CH ' + channel : ''))
-        .getCharacteristic(Characteristic.CurrentDoorState)
+        .getCharacteristic(Characteristic.TargetDoorState)
         .on('set', function(value, callback) {
             platform.setDoorState(accessory, value, callback);
         })
@@ -533,7 +540,7 @@ eWeLink.prototype.addAccessory = function(device, deviceId = null, services = { 
     this.accessories.set(device.deviceid, accessory);
 
     this.api.registerPlatformAccessories("homebridge-ewelink-garage",
-        "eWeLink", [accessory]);
+      "eWeLinkGarage", [accessory]);
 
 };
 
@@ -581,7 +588,8 @@ eWeLink.prototype.updateGarageDoorCharacteristic = function(deviceId, state, dev
 
     let platform = this;
 
-    let isOn = false;
+    let isOpen = false;
+    let door = "Closed"
 
     let accessory = platform.accessories.get(deviceId);
 
@@ -597,13 +605,14 @@ eWeLink.prototype.updateGarageDoorCharacteristic = function(deviceId, state, dev
     }
 
     if (state === 'on') {
-        isOn = true;
+        isOpen = true;
+        door = "Open"
     }
 
-    platform.log("Updating recorded Characteristic.On for [%s] to [%s]. No request will be sent to the device.", accessory.displayName, isOn);
+    platform.log("Updating recorded Characteristic.TargetDoorState for [%s] to [%s]. No request will be sent to the device.", accessory.displayName, door);
 
     accessory.getService(Service.GarageDoorOpener)
-      .setCharacteristic(Characteristic.CurrentDoorState, isOn);
+      .setCharacteristic(Characteristic.TargetDoorState, isOpen);
 };
 
 eWeLink.prototype.updateCurrentTemperatureCharacteristic = function(deviceId, state, device = null, channel = null) {
@@ -1063,12 +1072,14 @@ eWeLink.prototype.setDoorState = function(accessory, isOn, callback) {
     options.protocolVersion = 13;
 
     let targetState = 'off';
+    let door = "closed"
 
     if (isOn) {
         targetState = 'on';
+        door = "open"
     }
 
-    platform.log("Setting power state to [%s] for device [%s]", targetState, accessory.displayName);
+    platform.log("Setting door state to [%s] for device [%s]", door, accessory.displayName);
 
     let payload = {};
     payload.action = 'update';
