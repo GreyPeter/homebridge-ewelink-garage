@@ -134,7 +134,7 @@ function eWeLink(log, config, api) {
                         }
 
                         if (platform.devicesFromApi.has(deviceId) && (accessory.context.switches <= 1 || accessory.context.channel <= accessory.context.switches)) {
-                            platform.log('Device [%s] is regeistered with API. Nothing to do.', accessory.displayName);
+                            platform.log('Device [%s] is registered with API. Nothing to do.', accessory.displayName);
                         } else {
                             platform.log('Device [%s], ID : [%s] was not present in the response from the API. It will be removed.', accessory.displayName, accessory.UUID);
                             platform.removeAccessory(accessory);
@@ -253,12 +253,14 @@ function eWeLink(log, config, api) {
 
                             if (json.action === 'update') {
 
-                                //platform.log("Update message received for device [%s]", json.deviceid);
-
                                 if (json.hasOwnProperty("params") && json.params.hasOwnProperty("switch")) {
-                                  platform.log("updatePowerStateCharacteristic in json.action === 'update'")
-                                  platform.updateGarageDoorCharacteristic(json.deviceid, json.params);
-                                  //platform.updatePowerStateCharacteristic(json.deviceid, json.params.switch);
+                                  if (platform.devicesFromApi.get(json.deviceid).extra.extra.model === "PSF-B01-GL") {
+                                      platform.log("Updating Garage Door Characteristic");
+                                      platform.updateGarageDoorCharacteristic(json.deviceid, json.params.switch);
+                                  } else {
+                                    platform.log("Updating Power Switch Characteristic");
+                                    platform.updatePowerStateCharacteristic(json.deviceid, json.params.switch);
+                                  }
                                 } else if (json.hasOwnProperty("params") && json.params.hasOwnProperty("switches") && Array.isArray(json.params.switches)) {
                                   platform.log("updatePowerStateCharacteristic in json.params.hasOwnProperty('switches')")
                                     json.params.switches.forEach(function (entry) {
@@ -271,12 +273,6 @@ function eWeLink(log, config, api) {
                                 if (json.hasOwnProperty("params") && (json.params.hasOwnProperty("currentTemperature") || json.params.hasOwnProperty("currentHumidity"))) {
                                     platform.updateCurrentTemperatureCharacteristic(json.deviceid, json.params);
                                 }
-
-                                if (json.hasOwnProperty("params") && (json.params.hasOwnProperty("TargetDoorState") )) {
-                                  platform.log("Updating Garage Door Characteristic");
-                                    platform.updateGarageDoorCharacteristic(json.deviceid, json.params);
-                                }
-
 
                             }
 
