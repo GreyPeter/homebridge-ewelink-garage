@@ -5,6 +5,10 @@ let url = require('url');
 let request = require('request-json');
 let nonce = require('nonce')();
 
+var targetState = 1; //Closed
+var currentState = 1; //Closed
+var doorState = 1; // Closed
+
 let wsc;
 let isSocketOpen = false;
 let sequence = 0;
@@ -12,8 +16,6 @@ let webClient = '';
 let apiKey = 'UNCONFIGURED';
 let authenticationToken = 'UNCONFIGURED';
 let Accessory, Service, Characteristic, UUIDGen, DoorState;
-
-var doorState = 1; // Closed
 
 module.exports = function(homebridge) {
     console.log("homebridge API version: " + homebridge.version);
@@ -60,6 +62,23 @@ function eWeLink(log, config, api) {
     this.accessories = new Map();
     this.authenticationToken = config['authenticationToken'];
     this.devicesFromApi = new Map();
+
+    doorStateToString = function(state) {
+      switch (state) {
+        case DoorState.OPEN:
+          return "OPEN";
+        case DoorState.CLOSED:
+          return "CLOSED";
+        case DoorState.STOPPED:
+          return "STOPPED";
+        case DoorState.OPENING:
+          return "OPENING";
+        case DoorState.CLOSING:
+          return "CLOSING";
+        default:
+          return "UNKNOWN";
+        }
+      }
 
     if (api) {
         // Save the API object as plugin needs to register new accessory via this object
@@ -176,7 +195,7 @@ function eWeLink(log, config, api) {
                                 accessory.getService(Service.AccessoryInformation).setCharacteristic(Characteristic.Name, deviceInformationFromWebApi.name);
                                 if(deviceInformationFromWebApi.extra.extra.model === "PSF-B01-GL") {
                                     platform.log("Garage Door device has been set: " + deviceInformationFromWebApi.extra.extra.model);
-                                    platform.updateGarageDoorCharacteristic(deviceId, deviceInformationFromWebApi.params);
+                                    platform.updateGarageDoorCharacteristic(deviceId, deviceInformationFromWebApi.params.switch);
                                 } else {
                                   platform.updatePowerStateCharacteristic(deviceId, deviceInformationFromWebApi.params.switch);
                                 }
@@ -198,7 +217,7 @@ function eWeLink(log, config, api) {
                                 services.temperature = true;
                                 services.humidity = true;
                               } else if (deviceToAdd.extra.extra.model === "PSF-B01-GL") {
-                                platform.log("Adding services.GarageDoorOpener", deviceToAdd.extra.extra.model);
+                                platform.log("Adding GarageDoorOpener service - ", deviceToAdd.extra.extra.model);
                                 services.GarageDoorOpener = true;
                             } else {
                             	services.switch = true;
@@ -360,12 +379,16 @@ eWeLink.prototype.configureAccessory = function(accessory) {
         accessory.getService(Service.GarageDoorOpener)
             .getCharacteristic(Characteristic.TargetDoorState)
             .on('set', function(value, callback) {
-                platform.setDoorState(accessory, value, callback);
+                platform.setTargetDoorState(accessory, value, callback);
             })
+            .on('get', function(callback) {
+                platform.getTargetDoorState(accessory, callback);
+            });
+        accessory.getService(Service.GarageDoorOpener)
+            .getCharacteristic(Characteristic.CurrentDoorState)
             .on('get', function(callback) {
                 platform.getDoorState(accessory, callback);
             });
-
     }
     if(accessory.getService(Service.Thermostat)) {
         var service = accessory.getService(Service.Thermostat);
@@ -467,16 +490,19 @@ eWeLink.prototype.addAccessory = function(device, deviceId = null, services = { 
     }
     if(services.GarageDoorOpener) {
       platform.log("Adding GarageDoorOpener service");
-      platform.log("Door state triggered")
-        accessory.addService(Service.GarageDoorOpener, device.name + (channel ? ' CH ' + channel : ''))
-        .getCharacteristic(Characteristic.TargetDoorState)
+        var service = accessory.addService(Service.GarageDoorOpener, device.name + (channel ? ' CH ' + channel : ''))
+        service.getCharacteristic(Characteristic.TargetDoorState)
         .on('set', function(value, callback) {
-            platform.setDoorState(accessory, value, callback);
+            platform.setTargetDoorState(accessory, value, callback);
         })
         .on('get', function(callback) {
             platform.getDoorState(accessory, callback);
         });
-    }
+            service.getCharacteristic(Characteristic.CurrentDoorState)
+            .on('get', function(callback) {
+                platform.getDoorState(accessory, callback);
+            });
+}
     if(services.thermostat) {
         var service = accessory.addService(Service.Thermostat, device.name + (channel ? ' CH ' + channel : ''));
 
@@ -583,9 +609,11 @@ eWeLink.prototype.updateGarageDoorCharacteristic = function(deviceId, state, dev
     // Used when we receive an update from an external source
 
     let platform = this;
+    platform.log("updateGarageDoorCharacteristic - state =", state)
 
-    let isOpen = false;
-    let door = "Closed"
+//    let isOpen = false;
+//    let door = "Closed"
+    doorState = DoorState.CLOSED; //Closed
 
     let accessory = platform.accessories.get(deviceId);
 
@@ -600,15 +628,18 @@ eWeLink.prototype.updateGarageDoorCharacteristic = function(deviceId, state, dev
         return;
     }
 
-    if (state === 'on') {
-        isOpen = true;
-        door = "Open"
-    }
+    if (state === 'on') {  // Relay on = door open
+//        isOpen = true;
+//        door = "Open"
+        doorState = DoorState.OPEN; //Open
+        }
 
-    platform.log("Updating recorded Characteristic.TargetDoorState for [%s] to [%s]. No request will be sent to the device.", accessory.displayName, door);
+    platform.log("Updating GarageDoorCharacteristic for [%s] to [%s].", accessory.displayName, doorStateToString(doorState));
 
-    accessory.getService(Service.GarageDoorOpener)
-      .setCharacteristic(Characteristic.TargetDoorState, isOpen);
+    if(accessory.getService(Service.GarageDoorOpener))  {
+      accessory.getService(Service.GarageDoorOpener)
+        .setCharacteristic(Characteristic.CurrentDoorState, doorState);
+      }
 };
 
 eWeLink.prototype.updateCurrentTemperatureCharacteristic = function(deviceId, state, device = null, channel = null) {
@@ -825,12 +856,16 @@ eWeLink.prototype.getDoorState = function(accessory, callback) {
                     if (device.params.switches[accessory.context.channel-1].switch === 'on') {
                         accessory.reachable = true;
                         platform.log('API reported that [%s] CH %s is Open', device.name, accessory.context.channel);
-                        callback(null, 0);
+                        currentState = DoorState.OPEN;
+                        platform.log('Door State = ', currentState);
+                        callback(null, currentState);
                         return;
                     } else if (device.params.switches[accessory.context.channel-1].switch === 'off') {
                         accessory.reachable = true;
                         platform.log('API reported that [%s] CH %s is Closed', device.name, accessory.context.channel);
-                        callback(null, 1);
+                        currentState = DoorState.CLOSED;
+                        platform.log('Door State = ', currentState);
+                        callback(null, currentState);
                         return;
                     } else {
                         accessory.reachable = false;
@@ -844,13 +879,15 @@ eWeLink.prototype.getDoorState = function(accessory, callback) {
                     if (device.params.switch === 'on') {
                         accessory.reachable = true;
                         platform.log('API reported that [%s] is Open', device.name);
-                        callback(null, 0);
-                        return;
+                        currentState = DoorState.OPEN;
+                        platform.log('Door State = ', currentState);
+                        callback(null, currentState);                        return true;
                     } else if (device.params.switch === 'off') {
                         accessory.reachable = true;
                         platform.log('API reported that [%s] is Closed', device.name);
-                        callback(null, 1);
-                        return;
+                        currentState = DoorState.CLOSED;
+                        platform.log('Door State = ', currentState);
+                        callback(null, currentState);                        return false;
                     } else {
                         accessory.reachable = false;
                         platform.log('API reported an unknown status for device [%s]', accessory.displayName);
@@ -879,6 +916,17 @@ eWeLink.prototype.getDoorState = function(accessory, callback) {
 
     });
 
+};
+
+eWeLink.prototype.getTargetDoorState = function(accessory, callback) {
+  let platform = this;
+  
+  if (targetState==DoorState.OPEN){
+    platform.log("TargetDoorState is OPEN");
+  } else {
+    platform.log("TargetDoorState is CLOSED");
+  };
+  callback(null, targetState); // OPEN=0, CLOSED=1
 };
 
 eWeLink.prototype.getCurrentTemperature = function(accessory, callback) {
@@ -1061,21 +1109,39 @@ eWeLink.prototype.setHumidityState = function(accessory, value, callback) {
     callback();
 };
 
-eWeLink.prototype.setDoorState = function(accessory, isOn, callback) {
+eWeLink.prototype.setTargetDoorState = function(accessory, target, callback) {
     let platform = this;
     let options = {};
     let deviceId = accessory.context.deviceId;
     options.protocolVersion = 13;
 
-    let targetState = 'off';
-    let door = "closed"
+    // Get the current door state
+    let currentStateCharacteristic = accessory.getService(Service.GarageDoorOpener)
+          .getCharacteristic(Characteristic.CurrentDoorState);
+    let currentState = currentStateCharacteristic.value;
 
-    if (isOn) {
-        targetState = 'on';
-        door = "open"
+    targetState = 'on'; // Set to open the door
+
+    if (target) { // Close
+        targetState = 'off'; // Set to close the door
     }
 
-    platform.log("Setting door state to [%s] for device [%s]", door, accessory.displayName);
+    platform.log("in setTargetDoorState - Door is currently", doorStateToString(currentState));
+    platform.log("Door is currently [%s]. Setting target state to [%s] for device [%s]",doorStateToString(currentState),doorStateToString(target), accessory.displayName);
+
+    if (currentState == target) {
+      platform.log("Door state = Target state nothing to do");
+      return;
+    } else {
+      platform.log('Door state not equal to Target State. Triggering the garage door relay');
+    }
+
+    if (target) {
+      doorState = DoorState.CLOSING;  //If the door is open. Change to closing.
+    } else {
+      doorState = DoorState.OPENING;  //If the door is closed. Change to opening.
+    }
+    platform.log('Garage door is ', doorStateToString(doorState))
 
     let payload = {};
     payload.action = 'update';
@@ -1085,7 +1151,7 @@ eWeLink.prototype.setDoorState = function(accessory, isOn, callback) {
         deviceId = deviceId.replace("CH"+accessory.context.channel,"");
         let deviceInformationFromWebApi = platform.devicesFromApi.get(deviceId);
         payload.params.switches = deviceInformationFromWebApi.params.switches;
-        payload.params.switches[accessory.context.channel - 1].switch = targetState;
+        payload.params.switches[accessory.context.channel - 1].switch = !targetState;
     }
     else {
         payload.params.switch = targetState;
@@ -1104,6 +1170,8 @@ eWeLink.prototype.setDoorState = function(accessory, isOn, callback) {
             platform.wsc.send(string);
 
             // TODO Here we need to wait for the response to the socket
+            accessory.getService(Service.GarageDoorOpener)
+                .setCharacteristic(Characteristic.CurrentDoorState, doorState);
 
             callback();
         }, 1);
