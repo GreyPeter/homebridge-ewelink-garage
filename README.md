@@ -1,4 +1,6 @@
-# homebridge-ewelink-max
+# homebridge-ewelink-garage
+
+Updated to work with Ewelink WiFi Switch Garage Door Controller.
 
 Homebridge plugin to control Sonoff relays with OEM firmware. It uses the same API as the iOS app to communicate with your devices.
 
